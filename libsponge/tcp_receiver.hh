@@ -20,7 +20,19 @@ class TCPReceiver {
     //! The maximum number of bytes we'll store.
     size_t _capacity;
 
-  public:
+    //! The ISN of the receiver
+    uint32_t _isn=0;
+
+    //! current ackno： 32bit
+    uint32_t _ackno=0;
+
+    //! SYN flag :after SYN comes, it goes true
+    bool syn_flag=false;
+
+    //! FIN flag：after receive FIN,it goes true
+    bool fin_flag=false;
+
+public:
     //! \brief Construct a TCP receiver
     //!
     //! \param capacity the maximum number of bytes that the receiver will

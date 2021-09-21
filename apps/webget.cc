@@ -16,9 +16,23 @@ void get_URL(const string &host, const string &path) {
     // Then you'll need to print out everything the server sends back,
     // (not just one call to read() -- everything) until you reach
     // the "eof" (end of file).
-
+    /**
+     * 可能会使用到的方法有：
+     * TcpSocket
+     */
+     TCPSocket sock{};
+     sock.connect(Address(host,"http"));
+     //传递参数构造一个Address类并通过tcp connect到对应的服务器
+    sock.write("GET "+path+" HTTP/1.1\r\nHost: "+host+"\r\n\r\n");
+    //根据资源位置获取
+     sock.shutdown(SHUT_WR);//停止socket的写入
+     while(!sock.eof()){
+         cout << sock.read();
+     }
+     sock.close();
     cerr << "Function called: get_URL(" << host << ", " << path << ").\n";
     cerr << "Warning: get_URL() has not been implemented yet.\n";
+    return ;
 }
 
 int main(int argc, char *argv[]) {
