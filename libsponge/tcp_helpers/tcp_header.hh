@@ -1,8 +1,8 @@
 #ifndef SPONGE_LIBSPONGE_TCP_HEADER_HH
 #define SPONGE_LIBSPONGE_TCP_HEADER_HH
 
-#include "parser.hh"
-#include "wrapping_integers.hh"
+#include "../util/parser.hh"
+#include "../wrapping_integers.hh"
 
 //! \brief [TCP](\ref rfc::rfc793) segment header
 //! \note TCP options are not supported

@@ -1,8 +1,8 @@
 #ifndef SPONGE_LIBSPONGE_TCP_CONFIG_HH
 #define SPONGE_LIBSPONGE_TCP_CONFIG_HH
 
-#include "address.hh"
-#include "wrapping_integers.hh"
+#include "../util/address.hh"
+#include "../wrapping_integers.hh"
 
 #include <cstddef>
 #include <cstdint>
