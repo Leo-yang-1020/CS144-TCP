@@ -38,7 +38,7 @@ class TCPSender {
     uint64_t _next_seqno{0};
 
     //! to store the outgoing segment
-    std::queue<TCPSegment> _outgoing_segment{};
+    std::queue<TCPSegment> _outstanding_segment{};
 
 
     //!表示当接收到一个正确的报文时该报文的窗口大小

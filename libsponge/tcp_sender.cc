@@ -1,9 +1,7 @@
 #include "tcp_sender.hh"
 
-
-
+#include <optional>
 #include <random>
-#include<optional>
 
 // Dummy implementation of a TCP sender
 
@@ -22,15 +20,13 @@ TCPSender::TCPSender(const size_t capacity, const uint16_t retx_timeout, const s
     : _isn(fixed_isn.value_or(WrappingInt32{random_device()()}))
     , _initiail_retransmission_tmeout{retx_timeout}
     , _rto(_initiail_retransmission_tmeout)
-    , _stream(capacity){}
+    , _stream(capacity) {}
 
 /**
  * 返回已经发送但还没有确认的报文的数量
  * @return
  */
-uint64_t TCPSender::bytes_in_flight() const {
-    return _bytes_in_flight;
-}
+uint64_t TCPSender::bytes_in_flight() const { return _bytes_in_flight; }
 /**
  * fill_window函数需要完成sender业务逻辑，包括SYN，FIN报文，从ByteStream中读取数据并发送等等的逻辑,其逻辑关联需要用到FSM
  * 实现逻辑如下：
@@ -60,60 +56,59 @@ uint64_t TCPSender::bytes_in_flight() const {
 void TCPSender::fill_window() {
     //填充window的原则为尽可能一个segment足够大，不超过MSS的最大值，也不超过window size
     if (!_syn_sent) {
+        // SYN尚未发送，发送端必须先发送SYN报文，且SYN报文通常不携带数据
         _syn_sent = true;
         TCPSegment seg;
         seg.header().syn = true;
         send_segment(seg);
         return;
     }
-    if (!_outgoing_segment.empty() && _outgoing_segment.front().header().syn)
+    if (!_outstanding_segment.empty() && _outstanding_segment.front().header().syn)
+        // SYN已经发送但未确认
         return;
     if (!_stream.buffer_size() && !_stream.eof())
+        //字节流为空且没有关闭
         return;
     if (_fin_sent)
+        // FIN
         return;
 
-
-
-    if(_window_size==0&&!_zero_window_sent){
+    if (_window_size == 0 && !_zero_window_sent) {
         TCPSegment seg;
         //零窗口探测机制
-        if(!_stream.buffer_empty()&&!_stream.eof()){
-            seg.payload()=_stream.read(1);
+        if (!_stream.buffer_empty() && !_stream.eof()) {
+            seg.payload() = _stream.read(1);
+        } else if (_stream.eof()) {
+            seg.header().fin = true;
         }
-        else if(_stream.eof()){
-            seg.header().fin=true;
-        }
-        _zero_window_sent=true;
+        _zero_window_sent = true;
         send_segment(seg);
         return;
     }
     //
     while (_receiver_free_space > 0) {
         TCPSegment seg;
-        if(_stream.buffer_empty()){
-            if(_stream.eof()&&!_fin_sent&&_receiver_free_space>0){
-                seg.header().fin=true;
-                _fin_sent= true;
+        if (_stream.buffer_empty()) {
+            if (_stream.eof() && !_fin_sent && _receiver_free_space > 0) {
+                seg.header().fin = true;
+                _fin_sent = true;
                 send_segment(seg);
             }
             break;
         }
 
         //新的报文的payload的大小的限制:_receiver_free_space,流的大小，max_payload_size，三者取最小值
-        size_t payload_size = min(min((_stream.buffer_size()),static_cast<size_t>(_receiver_free_space)),(TCPConfig::MAX_PAYLOAD_SIZE));
+        size_t payload_size =
+            min(min((_stream.buffer_size()), static_cast<size_t>(_receiver_free_space)), (TCPConfig::MAX_PAYLOAD_SIZE));
         seg.payload() = _stream.read(payload_size);
 
-        if (_stream.eof() && payload_size < _receiver_free_space ) {
+        if (_stream.eof() && payload_size < _receiver_free_space) {
             //当流已经关闭并且有剩余空间->将报文设置FIN标志（也会占据一个size）
             seg.header().fin = true;
-            _fin_sent=true;
+            _fin_sent = true;
         }
         send_segment(seg);
-
-
     }
-
 }
 
 void TCPSender::send_segment(TCPSegment &segment) {
@@ -124,14 +119,14 @@ void TCPSender::send_segment(TCPSegment &segment) {
 
     segment.header().seqno = wrap(_next_seqno, _isn);
     _next_seqno += segment.length_in_sequence_space();
-    _bytes_in_flight+=segment.length_in_sequence_space();
+    _bytes_in_flight += segment.length_in_sequence_space();
 
-    if (!segment.header().syn&&_receiver_free_space>=segment.length_in_sequence_space()) {
+    if (!segment.header().syn && _receiver_free_space >= segment.length_in_sequence_space()) {
         _receiver_free_space -= segment.length_in_sequence_space();
     }
 
     _segments_out.push(segment);
-    _outgoing_segment.push(segment);
+    _outstanding_segment.push(segment);
 }
 
 /**
@@ -144,37 +139,37 @@ void TCPSender::send_segment(TCPSegment &segment) {
 //! \param window_size The remote receiver's advertised window size
 void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_size) {
     uint64_t absolute_seg_ack = unwrap(ackno, _isn, _next_seqno);
-    if(!is_valid_ackno(absolute_seg_ack,window_size)){
+    if (!is_valid_ackno(absolute_seg_ack, window_size)) {
         //不符合规范的报文直接return
         return;
     }
-    _window_size=window_size;
+    _window_size = window_size;
 
-    while (!_outgoing_segment.empty()) {
+    while (!_outstanding_segment.empty()) {
         //由于接受端采取的是累计确认的机制，因此收到的ack及之前的所有报文都已经到达，需要将其移出outgoing队列
 
-        TCPSegment un_ack_seg = _outgoing_segment.front();
+        TCPSegment un_ack_seg = _outstanding_segment.front();
         uint64_t outgoing_seg_right_bound =
             un_ack_seg.length_in_sequence_space() + unwrap(un_ack_seg.header().seqno, _isn, absolute_seg_ack) - 1;
         if (absolute_seg_ack > outgoing_seg_right_bound) {
             //只有某个segment被完整地确认后才能出队
-            _outgoing_segment.pop();
+            _outstanding_segment.pop();
             _rto = _initiail_retransmission_tmeout;
             _time_passed = 0;
             _consecutive_retransmissions = 0;
             _bytes_in_flight -= un_ack_seg.length_in_sequence_space();
-            _zero_window_sent=false;
+            _zero_window_sent = false;
         } else {
             break;
         }
     }
 
-    if(_outgoing_segment.empty()){
+    if (_outstanding_segment.empty()) {
         //当outgoing队列清空时，关闭定时器
-        _timer_running=false;
+        _timer_running = false;
     }
 
-    //一个ACK报文到达后，需要判断其是否具备让发送端继续发送的条件
+    //一个ACK报文到达后，需要更新_receiver_free_space，sender才能正确地发送指定数量的报文
     //!表示该ack报文请求的最右的seq
     uint64_t absolute_right_bound = absolute_seg_ack + static_cast<uint64_t>(window_size) - 1;
     if (_next_seqno <= absolute_right_bound) {
@@ -182,7 +177,6 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
 
         //接下会调用fill_window()函数，决定了fill_window()函数将会发送多大的报文
         _receiver_free_space = (absolute_right_bound - _next_seqno + 1);
-
     }
     fill_window();
 }
@@ -195,8 +189,21 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
  * @param ackno
  * @return
  */
-bool TCPSender::is_valid_ackno(uint64_t absolute_seg_ack,uint16_t window_size) {
-    return (absolute_seg_ack>0&&absolute_seg_ack<=_next_seqno)||((absolute_seg_ack+static_cast<uint64_t>(window_size))>_next_seqno);
+bool TCPSender::is_valid_ackno(uint64_t absolute_seg_ack, uint16_t window_size) {
+    //
+    bool ack_value = false;
+
+    if (!_outstanding_segment.empty()) {
+        //当_outstanding_segment不为空时，检查该报文是否具有确认价值->能够确认某些已发送的报文
+        TCPSegment first_unack_seg = _outstanding_segment.front();
+        uint64_t unack_seg =unwrap(first_unack_seg.header().seqno, _isn, _next_seqno);
+        ack_value = absolute_seg_ack > unack_seg;
+    }
+    uint64_t new_seg_right = absolute_seg_ack + static_cast<uint64_t>(window_size) - 1;
+    //判断某一个报文是否具有让发送端发送新报文的价值->其右值大于等于_next_seqno
+    bool send_value = _next_seqno <= new_seg_right;
+    //报文满足基本的范围要求，并且具有发送价值或者确认价值，那么这个报文就是有意义的
+    return absolute_seg_ack > 0 && absolute_seg_ack <= _next_seqno && (ack_value || send_value);
 }
 
 //! \param[in] ms_since_last_tick the number of milliseconds since the last call to this method
@@ -206,7 +213,7 @@ void TCPSender::tick(const size_t ms_since_last_tick) {
     }
     if (ms_since_last_tick + _time_passed >= _rto) {
         //已经超时
-        TCPSegment seg = _outgoing_segment.front();
+        TCPSegment seg = _outstanding_segment.front();
         _segments_out.push(seg);  //相当于重发最早未确认的报文
         if (_window_size != 0) {
             //窗口不为0时，将_rto的值翻倍，连续重发次数++
@@ -214,7 +221,7 @@ void TCPSender::tick(const size_t ms_since_last_tick) {
             _consecutive_retransmissions++;
         }
         _time_passed = 0;
-        _zero_window_sent=false;//超时后又可以发送零窗口探测报文
+        _zero_window_sent = false;  //超时后又可以发送零窗口探测报文
     } else {
         _time_passed += ms_since_last_tick;
     }
@@ -224,13 +231,7 @@ unsigned int TCPSender::consecutive_retransmissions() const { return _consecutiv
 
 void TCPSender::send_empty_segment() {
     TCPSegment seg;
-    seg.header().seqno=wrap(_next_seqno,_isn);
+    seg.header().seqno = wrap(_next_seqno, _isn);
     _segments_out.push(seg);
-
 }
-//int main(){
-//    TCPSender sender={100,100, WrappingInt32(100)};
-//    sender.fill_window();
-//    //sender.ack_received(WrappingInt32(101),100);
-//
-//}
+
